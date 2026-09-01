@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: tailcat-preview-gateway
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      - key: DEVPREVIEW_CONTROL_TOKEN
+        sync: false
