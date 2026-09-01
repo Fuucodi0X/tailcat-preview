@@ -1,154 +1,188 @@
 # Tailcat Preview
 
-Tailcat Preview makes a development server on your laptop available in your phone's browser. The laptop keeps its ports closed to the public internet. A small gateway accepts HTTPS requests and reaches the laptop through an encrypted Tailcat connection.
+Share a web app running on your laptop with a phone, teammate, or client. They open a normal HTTPS link. You keep the app local and do not open a router port.
 
-This repository contains the first working slice:
+```text
+https://your-gateway.example/_devpreview/open/...?...  ->  localhost:3000
+```
 
-- `devpreview expose` runs beside a local development server.
-- `gateway` runs on Render or another container host.
-- The gateway authenticates with a Tailcat node key before the laptop accepts it.
-- Each preview link contains a random access key and expires after four hours by default.
-- HTTP streaming, server-sent events, and WebSocket upgrades pass through Go's reverse proxy.
-- Registrations live in memory. The laptop restores them whenever the gateway restarts.
+Tailcat Preview is useful when you want someone to try a work in progress without deploying that work. It fits quick mobile checks, design reviews, pair debugging, and demos that should disappear when you finish.
+
+## Why use it
+
+- **No app for the visitor.** The preview opens in any current browser.
+- **No inbound port on your laptop.** The laptop starts the connection to the hosted gateway.
+- **One command per preview.** Point `devpreview` at the port your app already uses.
+- **Short-lived access.** Links last four hours by default, stop working when the command exits, and can last no more than 24 hours.
+- **Works with live development servers.** HTTP streaming, server-sent events, and WebSocket upgrades pass through the proxy.
+
+This is a better fit than a deployment when the code is unfinished and the laptop should remain the source of truth. It is not a production host, a permanent staging environment, or a way to share sensitive admin tools.
 
 ## How it works
 
 ```text
-Android Chrome
+Friend's browser
       |
-      | HTTPS
+      | HTTPS and a private preview link
       v
-Render gateway
+Hosted gateway
       |
-      | Tailcat, direct WireGuard when possible
-      | DERP fallback otherwise
+      | encrypted Tailcat connection
       v
-devpreview expose 3000
+devpreview on your laptop
       |
-      | TCP to 127.0.0.1:3000
+      | 127.0.0.1:3000
       v
-Vite, Next.js, Rails, or another local dev server
+Your existing dev server
 ```
 
-The phone does not need an app. It only needs the preview URL printed by `devpreview`.
+The repository builds two programs:
 
-## Requirements
+- `gateway` is the small public HTTPS entry point. You deploy it once.
+- `devpreview` runs beside your local app whenever you want to share a preview.
 
-- Go 1.27 or Docker 20.10 or newer
-- A local web development server
-- A Render account for the free hosted gateway
-- Outbound HTTPS and UDP access from the laptop
+The gateway reaches the laptop over Tailcat, using a direct WireGuard path when available and a DERP relay otherwise.
 
-Tailcat Preview pins Tailcat while its API and wire format are still unstable. Upgrade that dependency deliberately and test both ends together.
+## Quick start
 
-## Try it locally
+You need Go 1.26.5 or newer. Docker 20.10 or newer also works if you do not have Go installed.
 
-Create a control token. Both processes must use the same value.
+### 1. Build the binaries
 
 ```bash
-export DEVPREVIEW_CONTROL_TOKEN="$(openssl rand -hex 32)"
+git clone https://github.com/Fuucodi0X/tailcat-preview.git
+cd tailcat-preview
+make build
 ```
 
-Start the gateway:
-
-```bash
-export DEVPREVIEW_PUBLIC_URL=http://localhost:8080
-export DEVPREVIEW_INSECURE_COOKIE=true
-go run ./cmd/gateway
-```
-
-Start a development server in another terminal. This example uses Python only as a convenient HTTP server:
-
-```bash
-python3 -m http.server 3000
-```
-
-Expose it:
-
-```bash
-export DEVPREVIEW_GATEWAY_URL=http://localhost:8080
-go run ./cmd/devpreview expose --name playground 3000
-```
-
-The command prints a link. Open it in a browser on the same machine for this local test. Stop the command to revoke the link immediately.
-
-## Build without a local Go installation
-
-The Docker build runs the tests and produces the gateway image:
-
-```bash
-docker build -t tailcat-preview-gateway .
-```
-
-Build both standalone binaries with BuildKit:
+Without a local Go installation:
 
 ```bash
 docker build --target binaries --output type=local,dest=./bin .
 ```
 
-The output directory contains `gateway` and `devpreview`.
+### 2. Deploy the gateway once
 
-## Deploy the free gateway on Render
+Generate a control token and save it in a password manager. The gateway and laptop must use the same value.
 
-1. Put this directory in a GitHub repository.
-2. Generate a control token with `openssl rand -hex 32` and keep it somewhere private.
-3. In Render, create a Blueprint from `render.yaml`.
-4. Enter the control token when Render asks for `DEVPREVIEW_CONTROL_TOKEN`.
-5. Wait for the health check to pass.
-6. Copy the service URL. It looks like `https://tailcat-preview-gateway.onrender.com`.
+```bash
+openssl rand -hex 32
+```
 
-Render supplies that URL to the gateway through `RENDER_EXTERNAL_URL`, so no domain configuration is needed.
+The included [`render.yaml`](render.yaml) runs the gateway on Render:
 
-On the laptop:
+1. Create a Render Blueprint from this repository.
+2. Enter the generated value when Render asks for `DEVPREVIEW_CONTROL_TOKEN`.
+3. Wait for `/healthz` to pass.
+4. Copy the service URL, such as `https://tailcat-preview-gateway.onrender.com`.
+
+Render passes its public URL to the gateway automatically through `RENDER_EXTERNAL_URL`. The same container can run on another host if you set `DEVPREVIEW_PUBLIC_URL`, `DEVPREVIEW_CONTROL_TOKEN`, and the platform's HTTP port.
+
+### 3. Share a local app
+
+Start your app as usual. If it listens on port 3000, run:
 
 ```bash
 export DEVPREVIEW_GATEWAY_URL=https://your-service.onrender.com
-export DEVPREVIEW_CONTROL_TOKEN=the-same-control-token
+export DEVPREVIEW_CONTROL_TOKEN=the-token-from-step-2
 
-./bin/devpreview expose --name my-app 3000
+./bin/devpreview expose --name checkout-redesign 3000
 ```
 
-Send the printed link to your phone through Codex Remote, T3Connect, or another private channel.
+`devpreview` first checks that `127.0.0.1:3000` accepts connections. It then prints a link:
 
-## CLI options
+```text
+https://your-service.onrender.com/_devpreview/open/preview-id?key=browser-access-key
+```
+
+Send that full link to the person testing the app. Treat it like a temporary password. Keep the app server and `devpreview` running while they use it. Press `Ctrl+C` to revoke the preview immediately.
+
+To change the lifetime:
+
+```bash
+./bin/devpreview expose --name checkout-redesign --ttl 30m 3000
+```
+
+## Test everything locally
+
+You can run the gateway, a sample site, and the exposer on one machine before deploying anything.
+
+Create a token and start the gateway:
+
+```bash
+export DEVPREVIEW_CONTROL_TOKEN="$(openssl rand -hex 32)"
+printf '%s\n' "$DEVPREVIEW_CONTROL_TOKEN" # copy this value for terminal three
+export DEVPREVIEW_PUBLIC_URL=http://localhost:8080
+export DEVPREVIEW_INSECURE_COOKIE=true
+go run ./cmd/gateway
+```
+
+In a second terminal, start the included sample page:
+
+```bash
+python3 -m http.server --directory testdata/preview 3000
+```
+
+In a third terminal, reuse the control token and expose the sample:
+
+```bash
+export DEVPREVIEW_GATEWAY_URL=http://localhost:8080
+export DEVPREVIEW_CONTROL_TOKEN='paste the value printed in terminal one'
+go run ./cmd/devpreview expose --name sample 3000
+```
+
+Open the printed link on the same machine. Plain HTTP is only for this local test. A shared gateway should use HTTPS and must not set `DEVPREVIEW_INSECURE_COOKIE`.
+
+## CLI reference
 
 ```text
 devpreview expose [options] <port>
 
   --gateway URL         Gateway URL. Defaults to DEVPREVIEW_GATEWAY_URL.
   --control-token TOKEN Shared token. Defaults to DEVPREVIEW_CONTROL_TOKEN.
-  --name NAME           Label used in logs.
+  --name NAME           Label used in logs. Defaults to the current directory.
   --local-host HOST     Dev server host. Defaults to 127.0.0.1.
   --ttl DURATION        Link lifetime. Defaults to 4h, maximum 24h.
   --verbose             Print Tailcat networking logs.
 ```
 
+Examples:
+
+```bash
+# Vite on its common port
+./bin/devpreview expose --name web-ui 5173
+
+# A preview that expires after one hour
+./bin/devpreview expose --ttl 1h --name review 8081
+```
+
 ## Security model
 
-The control token authenticates the laptop to the gateway. Do not put it in source control or a preview URL.
+The control token authenticates `devpreview` to the gateway. It must never appear in source control or in a preview URL.
 
-When the laptop connects, the gateway sends its current Tailcat public key. The laptop allowlists that key before registering its Tailcat connection token. A party that discovers the Tailcat token cannot connect with a different key.
+Each `expose` command creates a new ephemeral Tailcat identity, preview ID, and 256-bit browser access key. The laptop accepts only the gateway's current Tailcat public key. The gateway stores a SHA-256 hash of the browser access key, not the key itself.
 
-Every expose command creates:
+On first use, the preview link creates a signed, HTTP-only browser cookie and redirects to a URL without the access key. The gateway terminates HTTPS and can read the proxied application traffic. Do not expose production data, credential-bearing admin pages, or anything the gateway operator must not see.
 
-- A new ephemeral Tailcat server identity
-- A random preview ID
-- A 256-bit browser access key
-- An expiry time of no more than 24 hours
-
-The gateway stores only a SHA-256 hash of the browser access key. Opening the link creates a signed, HTTP-only browser cookie and removes the key from subsequent URLs through a redirect. Stopping `devpreview` closes the Tailcat server and removes the gateway registration.
-
-The gateway terminates HTTPS and can read proxied application traffic. Do not expose production secrets or applications whose contents the gateway operator must not see. A future Android direct mode can provide phone-to-laptop encryption without this trusted gateway.
+Stopping `devpreview` removes its registration and closes the Tailcat server. Registrations live in gateway memory, and the laptop restores an active registration after a gateway restart.
 
 ## Current limits
 
-- One expose process handles one local port.
-- Registrations disappear while the laptop process is disconnected.
-- Absolute redirects to localhost are rewritten, but unusual application-generated external URLs may still need configuration.
-- Applications that require a fixed public hostname may reject the Render hostname.
-- Tailcat's public DERP fallback is rate-limited and has no uptime promise.
-- The gateway has not yet been load-tested against Render's 512 MB free instance.
+- One `devpreview` process exposes one local port.
+- The laptop, local app, and `devpreview` process must stay online.
+- Free Render services can sleep, so the first request may take longer.
+- Absolute redirects to localhost are rewritten. Apps with unusual external URL generation may still need a public-host setting.
+- Apps that validate the `Host` header may need to allow the gateway hostname in development.
+- Tailcat's public DERP fallback is rate-limited and has no uptime guarantee.
+- The gateway has not been load-tested on Render's 512 MB free instance.
 
-## Next work
+## Development
 
-The next useful additions are a persistent laptop daemon, multiple previews per process, a preview dashboard, connection-path diagnostics, and an install script for the laptop binary.
+```bash
+make test    # go test ./...
+make build   # build gateway and devpreview into bin/
+make docker  # build the gateway container
+make tidy    # update Go module metadata
+```
+
+Tailcat Preview currently pins Tailcat v0.3.0 because its API and wire format are still unstable. Upgrade the gateway and CLI together, then test both direct and relay connections.
